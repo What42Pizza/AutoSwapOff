@@ -6,7 +6,8 @@
 	clippy::perf,
 )]
 #![allow(
-	clippy::suboptimal_flops
+	clippy::suboptimal_flops,
+	clippy::suspicious_operation_groupings,
 )]
 
 // release-build only checks, some of these are slightly unreasonable, but it does pass all these checks
@@ -43,11 +44,11 @@ pub struct ProgramSettings {
 	run_type: RunType,
 	seconds_per_run: u64,
 	swap_usage_needed: u64,
+	excess_ram_needed: u64,
 	stability_check_min_duration: u64,
 	stability_check_max_duration: u64,
 	stability_check_interval: u64,
 	stability_check_look_ahead: u64,
-	excess_ram_needed: u64,
 }
 
 impl Default for ProgramSettings {
@@ -56,11 +57,11 @@ impl Default for ProgramSettings {
 			run_type: RunType::Looped,
 			seconds_per_run: 30,
 			swap_usage_needed: 1024 * 1024 * 1024,
+			excess_ram_needed: 2048 * 1024 * 1024,
 			stability_check_min_duration: 20,
 			stability_check_max_duration: 60,
 			stability_check_interval: 200,
 			stability_check_look_ahead: 30,
-			excess_ram_needed: 2048 * 1024 * 1024,
 		}
 	}
 }
@@ -82,11 +83,11 @@ fn main() -> Result<()> {
 			"--help" | "-h"                  => settings.run_type = RunType::Help,
 			"--seconds-per-run"              => settings.seconds_per_run              = take_arg::<u64>(&mut args, "--seconds-per-run")?,
 			"--swap-usage-needed"            => settings.swap_usage_needed            = take_arg::<u64>(&mut args, "--swap-usage-needed")? * 1024 * 1024,
+			"--excess-ram-needed"            => settings.excess_ram_needed            = take_arg::<u64>(&mut args, "--excess-ram-needed")? * 1024 * 1024,
 			"--stability-check-min-duration" => settings.stability_check_min_duration = take_arg::<u64>(&mut args, "--stability-check-min-duration")?,
 			"--stability-check-max-duration" => settings.stability_check_max_duration = take_arg::<u64>(&mut args, "--stability-check-max-duration")?,
 			"--stability-check-interval"     => settings.stability_check_interval     = take_arg::<u64>(&mut args, "--stability-check-interval")?,
 			"--stability-check-look-ahead"   => settings.stability_check_look_ahead   = take_arg::<u64>(&mut args, "--stability-check-look-ahead")?,
-			"--excess-ram-needed"            => settings.excess_ram_needed            = take_arg::<u64>(&mut args, "--excess-ram-needed")? * 1024 * 1024,
 			_ => eprintln!("Warning: unknown argument '{arg}'"),
 		}
 	}
@@ -110,15 +111,18 @@ fn main() -> Result<()> {
 		RunType::Help => {
 			
 			println!("Arguments:");
+			println!();
 			println!("    --once                                      Runs the check and operations only once instead of looping.");
 			println!("    --help | -h                                 Prints this help screen.");
+			println!();
 			println!("    --seconds-per-run <SECS>                    Sets how frequently this should check the current swap usage. Unit is seconds, default is 30.");
 			println!("    --swap-usage-needed <AMOUNT_MB>             This will not run swapoff/swapon unless the swap usage exceeds this amount. Unit is megabytes, default is 1024.");
+			println!("    --excess-ram-needed <AMOUNT_MB>             This will not run swapoff/swapon unless the available ram exceeds the amount of data currently stored in swap by at least this amount. This applies for both the current ram usage and predicted ram usage. Unit is megabytes, default is 2048.");
+			println!();
 			println!("    --stability-check-min-duration <DUR_SEC>    Once the 'swap usage' check passes, it starts tracking the ram usage for at least this long to make sure it isn't still being filled up. Unit is seconds, default is 20.");
-			println!("    --stability-check-max-duration <DUR_SEC>    If the stability check lasts longer than this then the operation is aborted and the program will wait 3x this duration before doing another 'swap usage' check. Unit is seconds, default is 60.");
+			println!("    --stability-check-max-duration <DUR_SEC>    If the stability check lasts longer than this then the operation is aborted and the program will wait 2x this duration before doing another 'swap usage' check. Unit is seconds, default is 60.");
 			println!("    --stability-check-interval <DUR_MS>         Sets how frequently the ram usage is checked during the stability check. Unit is milliseconds, default is 200.");
 			println!("    --stability-check-look-ahead <DUR_SEC>      As the ram usage is tracked, an estimate is made for how full the ram will likely be several seconds later (by simply fitting a line to the tracked data), this sets how far ahead it estimates. Unit is seconds, default is 30.");
-			println!("    --excess-ram-needed <AMOUNT_MB>             This will not run swapoff/swapon unless the available ram exceeds the amount of data currently stored in swap by at least this amount. This applies for both the current ram usage and predicted ram usage. Unit is megabytes, default is 2048.");
 			
 		}
 	}
@@ -130,20 +134,22 @@ fn main() -> Result<()> {
 
 pub fn run_loop(settings: &ProgramSettings) -> ! {
 	loop {
-		
 		match run_once(settings) {
+			
 			Result::Ok(stabilization_period_exceeded) => {
 				if stabilization_period_exceeded {
-					thread::sleep(Duration::from_secs(settings.stability_check_max_duration * 3 - settings.seconds_per_run));
+					thread::sleep(Duration::from_secs(settings.stability_check_max_duration * 2));
+				} else {
+					thread::sleep(Duration::from_secs(settings.seconds_per_run));
 				}
 			}
+			
 			Result::Err(err) => {
 				eprintln!("Error encountered while performing operation: {err}");
+				thread::sleep(Duration::from_secs(settings.seconds_per_run * 2));
 			}
+			
 		}
-		
-		thread::sleep(Duration::from_secs(settings.seconds_per_run));
-		
 	}
 }
 
